@@ -1,12 +1,10 @@
 import numpy as np
 from google.cloud import vision
-import enchant
 from pdf2image import convert_from_path
 import datetime
 import io
 import os
 import pickle
-import code
 
 SKIPWORDS = ['eur', 'stk', 'x']
 STOPWORDS = ['summe', 'visa', 'mwst', 'brutto', 'netto', 'zahlen', 'kreditkarte', 'ust-id-nr', 'rück geld']
@@ -50,12 +48,11 @@ class GcloudParser:
         self.debug = debug
         self.min_length = min_length
         self.max_height = max_height
-        self.dict_ger = enchant.Dict('de_DE')
         self.client = vision.ImageAnnotatorClient()
         self.allowed_labels = ['article', 'price', 'market', 'address', 'date', 'misc']
 
     def parse_date(self, date_str):
-        for fmt in ['%d.%m.%y', '%Y-%m-%d', '%d.%m.%y %H:%M', '%d.%m.%Y', '%d.%m.%y %H:%M']:
+        for fmt in ['%d.%m.%y', '%Y-%m-%d', '%d.%m.%y %H:%M', '%d.%m.%Y']:
             for substr in date_str.split(' '):
                 try:
                     new_purch_date = datetime.datetime.strptime(substr, fmt).strftime('%Y-%m-%d')
@@ -90,7 +87,7 @@ class GcloudParser:
                 page.save('tmp.jpg')
                 gcloud_response = self.detect_text('tmp.jpg')
                 pickle.dump(gcloud_response, open(pkl_name, 'wb'))
-            # os.system('rm tmp.jpg')
+                os.system('rm tmp.jpg')
             _art, _dat, _mar = self.parse_response(gcloud_response)
             articles += _art
             dates += _dat
@@ -123,6 +120,8 @@ class GcloudParser:
         return False
 
     def check_annotation_type(self, text_body):
+        if text_body[-1] == ',':
+            return 'hanging'
         if self.check_price(text_body):
             return 'number'
         if self.parse_date(text_body):
@@ -185,11 +184,13 @@ class GcloudParser:
                 if skipword in annotation.description.lower().split(' '):
                     if self.debug:
                         print('Skipping ' + str(annotation.description))
+                    current_name = ''
                     skip_this = True
             for skipword in BLACKLIST_WORDS:
                 if skipword in annotation.description.lower().split(' '):
                     if self.debug:
                         print('Skipping ' + str(annotation.description))
+                    current_name = ''
                     skip_this = True
             if skip_this:
                 continue
@@ -218,6 +219,9 @@ class GcloudParser:
                 current_price = None
                 current_name += annotation.description
                 y_current = 0
+                price_x_current = 0
+                is_hanging = False
+                p_description = ''
                 for j, p_ann in enumerate(sorted_annotations):
                     if i == j:
                         continue
@@ -236,21 +240,30 @@ class GcloudParser:
                     line_overlap = np.min([p_ymax-ymin, ymax-p_ymin]) / np.max([p_ymax-p_ymin, ymax-ymin])
                     if line_overlap < 0.5:
                         continue
-                    p_type = self.check_annotation_type(p_ann.description)
+                    if is_hanging:
+                        p_description += p_ann.description
+                        is_hanging = False
+                    else:
+                        p_description = p_ann.description
+                    p_type = self.check_annotation_type(p_description)
+                    if p_type == 'hanging':
+                        is_hanging = True
+                        continue
                     if p_type == 'number':
                         if p_xmax < g_xmax / 2:
                             continue
                         if j in seen_prices:
                             continue
                         # code.interact(banner='', local=locals())
-                        if p_ymax < ymin or p_ymin > ymax or p_xmax < xmax or p_ymin < y_current:
+                        if p_ymax < ymin or p_ymin > ymax or p_xmax < xmax or p_xmin < price_x_current:
                             if current_price or p_ymin > ymin + 2*line_height:
                                 continue
                         if self.debug:
-                            print('Checking ' + p_ann.description)
+                            print('Checking ' + p_description)
                         y_current = p_ymin
                         used_pr.append(j)
-                        current_price = self.check_price(p_ann.description)
+                        current_price = self.check_price(p_description)
+                        price_x_current = p_xmin
                         if self.debug:
                             print('New price ' + str(current_price))
                         parsed_y = max(parsed_y, (p_ymax + p_ymin) / 2)
@@ -262,7 +275,7 @@ class GcloudParser:
                         used_idx.append(j)
                         parsed_y = max(parsed_y, (p_ymax + p_ymin) / 2)
                         if self.debug:
-                            print('Appending ' + current_name + ' ' + p_ann.description)
+                            print('Appending ' + current_name + ' ' + p_description)
                         current_name += ' ' + p_ann.description
                 if self.debug:
                     print(current_name + ' ' + str(current_price))
@@ -284,6 +297,8 @@ class GcloudParser:
                             'name': current_name,
                             'price': current_price
                         })
+                        current_name = ''
+                        current_price = None
             elif t_type == 'date':
                 dates.append(self.parse_date(annotation.description))
             elif t_type == 'market':
