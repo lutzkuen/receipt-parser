@@ -101,7 +101,7 @@ class GcloudParser:
         """Detects text in the file."""
         with io.open(path, 'rb') as image_file:
             content = image_file.read()
-        image = vision.types.Image(content=content)
+        image = vision.Image(content=content)
         response = self.client.text_detection(image=image)
         if response.error.message:
             raise Exception(
